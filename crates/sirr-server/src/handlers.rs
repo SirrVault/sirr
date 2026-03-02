@@ -12,7 +12,7 @@ use tracing::info;
 
 use crate::{
     auth::ResolvedAuth,
-    license::{LicenseStatus, FREE_TIER_LIMIT},
+    license::LicenseStatus,
     store::{
         api_keys::{self, Permission},
         audit::{
@@ -228,59 +228,7 @@ pub async fn create_secret(
         }
     }
 
-    // License check: free tier capped at FREE_TIER_LIMIT active secrets.
-    // Licensed users are validated online when exceeding the free tier threshold.
-    match state.store.list() {
-        Ok(metas) if metas.len() >= FREE_TIER_LIMIT => {
-            if state.license == LicenseStatus::Free {
-                let _ = state.store.record_audit(AuditEvent::new(
-                    ACTION_SECRET_CREATE,
-                    Some(body.key.clone()),
-                    ip,
-                    false,
-                    Some("free tier limit reached".into()),
-                    None,
-                    None,
-                ));
-                return (
-                    StatusCode::PAYMENT_REQUIRED,
-                    Json(json!({
-                        "error": format!(
-                            "free tier limit of {FREE_TIER_LIMIT} secrets reached — \
-                             add SIRR_LICENSE_KEY to continue. \
-                             Get a license at https://sirrlock.com/pricing"
-                        )
-                    })),
-                )
-                    .into_response();
-            }
-
-            // Licensed — verify online if a validator is configured.
-            if let Some(ref validator) = state.validator {
-                if !validator.is_valid(&state.store).await {
-                    let _ = state.store.record_audit(AuditEvent::new(
-                        ACTION_SECRET_CREATE,
-                        Some(body.key.clone()),
-                        ip,
-                        false,
-                        Some("license validation failed".into()),
-                        None,
-                        None,
-                    ));
-                    return (
-                        StatusCode::PAYMENT_REQUIRED,
-                        Json(json!({
-                            "error": "license validation failed — \
-                                      please check your SIRR_LICENSE_KEY or contact support"
-                        })),
-                    )
-                        .into_response();
-                }
-            }
-        }
-        Err(e) => return internal_error(e),
-        _ => {}
-    }
+    // Licensing is now enforced at org/principal creation, not per-secret.
 
     match state.store.put(
         &body.key,

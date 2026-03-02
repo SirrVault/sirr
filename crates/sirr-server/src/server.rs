@@ -246,13 +246,10 @@ pub async fn run(cfg: ServerConfig) -> Result<()> {
     let lic_status = license::effective_status(cfg.license_key.as_deref());
     match &lic_status {
         license::LicenseStatus::Free => {
-            info!(
-                "running on free tier (≤{} secrets)",
-                license::FREE_TIER_LIMIT
-            );
+            info!("running on free tier (Solo limits)");
         }
-        license::LicenseStatus::Licensed => {
-            info!("license key accepted — unlimited secrets");
+        license::LicenseStatus::Licensed(tier) => {
+            info!(?tier, "license key accepted");
         }
         license::LicenseStatus::Invalid(reason) => {
             anyhow::bail!("invalid SIRR_LICENSE_KEY: {reason}");
@@ -270,7 +267,7 @@ pub async fn run(cfg: ServerConfig) -> Result<()> {
         .replace("/api/validate", "/api/instances/heartbeat");
 
     // Set up online license validation if a license key is configured and format is valid.
-    let validator = if lic_status == license::LicenseStatus::Licensed {
+    let validator = if matches!(lic_status, license::LicenseStatus::Licensed(_)) {
         if let Some(ref key) = cfg.license_key {
             let v = crate::validator::OnlineValidator::new(
                 key.clone(),
@@ -509,10 +506,8 @@ fn print_banner(
     };
 
     let tier = match lic_status {
-        license::LicenseStatus::Free => {
-            format!("free  (≤{} active secrets)", license::FREE_TIER_LIMIT)
-        }
-        license::LicenseStatus::Licensed => "licensed  (unlimited secrets)".to_string(),
+        license::LicenseStatus::Free => "free  (Solo tier)".to_string(),
+        license::LicenseStatus::Licensed(ref t) => format!("licensed  ({t:?})"),
         license::LicenseStatus::Invalid(_) => return,
     };
 
