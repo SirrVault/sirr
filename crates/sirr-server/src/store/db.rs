@@ -107,6 +107,9 @@ impl Store {
             read_count: 0,
             delete,
             webhook_url,
+            owner_id: None,
+            org_id: None,
+            allowed_keys: None,
         };
 
         let bytes = encode(&record, self.key_version)?;
@@ -211,6 +214,8 @@ impl Store {
                     max_reads: record.max_reads,
                     read_count: record.read_count,
                     delete: record.delete,
+                    owner_id: record.owner_id.clone(),
+                    org_id: record.org_id.clone(),
                 });
             }
         }
@@ -281,6 +286,8 @@ impl Store {
                         max_reads: record.max_reads,
                         read_count: record.read_count,
                         delete: record.delete,
+                        owner_id: record.owner_id.clone(),
+                        org_id: record.org_id.clone(),
                     },
                     sealed,
                 )))
@@ -356,6 +363,8 @@ impl Store {
                         max_reads: record.max_reads,
                         read_count: 0,
                         delete: record.delete,
+                        owner_id: record.owner_id.clone(),
+                        org_id: record.org_id.clone(),
                     }))
                 }
             }
@@ -575,6 +584,9 @@ impl Store {
                     read_count: record.read_count,
                     delete: record.delete,
                     webhook_url: record.webhook_url.clone(),
+                    owner_id: record.owner_id.clone(),
+                    org_id: record.org_id.clone(),
+                    allowed_keys: record.allowed_keys.clone(),
                 };
 
                 let new_bytes = encode(&new_record, new_key_version)?;
