@@ -11,7 +11,7 @@ use serde_json::json;
 use tracing::info;
 
 use crate::{
-    auth::ResolvedPermissions,
+    auth::ResolvedAuth,
     license::{LicenseStatus, FREE_TIER_LIMIT},
     store::{
         api_keys::{self, Permission},
@@ -112,12 +112,10 @@ pub struct AuditQueryParams {
 
 pub async fn audit_events(
     State(state): State<AppState>,
-    Extension(perms): Extension<ResolvedPermissions>,
+    Extension(_auth): Extension<ResolvedAuth>,
     Query(params): Query<AuditQueryParams>,
 ) -> Response {
-    if !perms.can_admin() {
-        return forbidden();
-    }
+    // Auth is handled by require_master_key middleware.
     let limit = params.limit.unwrap_or(100).min(1000);
     let query = AuditQuery {
         since: params.since,
@@ -153,13 +151,11 @@ pub async fn audit_events(
 
 pub async fn list_secrets(
     State(state): State<AppState>,
-    Extension(perms): Extension<ResolvedPermissions>,
+    Extension(_auth): Extension<ResolvedAuth>,
     headers: HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> Response {
-    if !perms.can_read() {
-        return forbidden();
-    }
+    // Auth is handled by require_master_key middleware.
     let ip = extract_ip(&headers, &addr, &state.trusted_proxies);
     match state.store.list() {
         Ok(metas) => {
@@ -198,14 +194,12 @@ pub struct CreateResponse {
 
 pub async fn create_secret(
     State(state): State<AppState>,
-    Extension(perms): Extension<ResolvedPermissions>,
+    Extension(_auth): Extension<ResolvedAuth>,
     headers: HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(body): Json<CreateRequest>,
 ) -> Response {
-    if !perms.can_write() || !perms.matches_prefix(&body.key) {
-        return forbidden();
-    }
+    // Auth is handled by require_master_key middleware.
     let ip = extract_ip(&headers, &addr, &state.trusted_proxies);
 
     if !validate_key_name(&body.key) {
@@ -502,17 +496,15 @@ pub struct PatchRequest {
 
 pub async fn patch_secret(
     State(state): State<AppState>,
-    Extension(perms): Extension<ResolvedPermissions>,
+    Extension(_auth): Extension<ResolvedAuth>,
     headers: HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(key): Path<String>,
     Json(body): Json<PatchRequest>,
 ) -> Response {
+    // Auth is handled by require_master_key middleware.
     if !validate_key_name(&key) {
         return bad_key_name();
-    }
-    if !perms.can_write() || !perms.matches_prefix(&key) {
-        return forbidden();
     }
     if body.max_reads == Some(0) {
         return (
@@ -615,16 +607,14 @@ pub async fn patch_secret(
 
 pub async fn delete_secret(
     State(state): State<AppState>,
-    Extension(perms): Extension<ResolvedPermissions>,
+    Extension(_auth): Extension<ResolvedAuth>,
     headers: HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(key): Path<String>,
 ) -> Response {
+    // Auth is handled by require_master_key middleware.
     if !validate_key_name(&key) {
         return bad_key_name();
-    }
-    if !perms.can_delete() || !perms.matches_prefix(&key) {
-        return forbidden();
     }
     let ip = extract_ip(&headers, &addr, &state.trusted_proxies);
     match state.store.delete(&key) {
@@ -665,13 +655,11 @@ pub async fn delete_secret(
 
 pub async fn prune_secrets(
     State(state): State<AppState>,
-    Extension(perms): Extension<ResolvedPermissions>,
+    Extension(_auth): Extension<ResolvedAuth>,
     headers: HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> Response {
-    if !perms.can_admin() {
-        return forbidden();
-    }
+    // Auth is handled by require_master_key middleware.
     let ip = extract_ip(&headers, &addr, &state.trusted_proxies);
     match state.store.prune() {
         Ok(pruned_keys) => {
@@ -707,14 +695,12 @@ pub struct CreateWebhookRequest {
 
 pub async fn create_webhook(
     State(state): State<AppState>,
-    Extension(perms): Extension<ResolvedPermissions>,
+    Extension(_auth): Extension<ResolvedAuth>,
     headers: HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(body): Json<CreateWebhookRequest>,
 ) -> Response {
-    if !perms.can_admin() {
-        return forbidden();
-    }
+    // Auth is handled by require_master_key middleware.
     let ip = extract_ip(&headers, &addr, &state.trusted_proxies);
 
     // License gate: free tier gets 0 webhooks.
@@ -787,11 +773,9 @@ pub async fn create_webhook(
 
 pub async fn list_webhooks(
     State(state): State<AppState>,
-    Extension(perms): Extension<ResolvedPermissions>,
+    Extension(_auth): Extension<ResolvedAuth>,
 ) -> Response {
-    if !perms.can_admin() {
-        return forbidden();
-    }
+    // Auth is handled by require_master_key middleware.
     match state.store.list_webhooks() {
         Ok(regs) => {
             // Redact signing secrets in the response.
@@ -814,14 +798,12 @@ pub async fn list_webhooks(
 
 pub async fn delete_webhook(
     State(state): State<AppState>,
-    Extension(perms): Extension<ResolvedPermissions>,
+    Extension(_auth): Extension<ResolvedAuth>,
     headers: HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(id): Path<String>,
 ) -> Response {
-    if !perms.can_admin() {
-        return forbidden();
-    }
+    // Auth is handled by require_master_key middleware.
     let ip = extract_ip(&headers, &addr, &state.trusted_proxies);
     match state.store.delete_webhook(&id) {
         Ok(true) => {
@@ -856,14 +838,12 @@ pub struct CreateApiKeyRequest {
 
 pub async fn create_api_key(
     State(state): State<AppState>,
-    Extension(perms): Extension<ResolvedPermissions>,
+    Extension(_auth): Extension<ResolvedAuth>,
     headers: HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(body): Json<CreateApiKeyRequest>,
 ) -> Response {
-    if !perms.can_admin() {
-        return forbidden();
-    }
+    // Auth is handled by require_master_key middleware.
     let ip = extract_ip(&headers, &addr, &state.trusted_proxies);
 
     // Parse permissions.
@@ -929,11 +909,9 @@ pub async fn create_api_key(
 
 pub async fn list_api_keys(
     State(state): State<AppState>,
-    Extension(perms): Extension<ResolvedPermissions>,
+    Extension(_auth): Extension<ResolvedAuth>,
 ) -> Response {
-    if !perms.can_admin() {
-        return forbidden();
-    }
+    // Auth is handled by require_master_key middleware.
     match state.store.list_api_keys() {
         Ok(records) => {
             let keys: Vec<_> = records
@@ -957,14 +935,12 @@ pub async fn list_api_keys(
 
 pub async fn delete_api_key(
     State(state): State<AppState>,
-    Extension(perms): Extension<ResolvedPermissions>,
+    Extension(_auth): Extension<ResolvedAuth>,
     headers: HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(id): Path<String>,
 ) -> Response {
-    if !perms.can_admin() {
-        return forbidden();
-    }
+    // Auth is handled by require_master_key middleware.
     let ip = extract_ip(&headers, &addr, &state.trusted_proxies);
     match state.store.delete_api_key(&id) {
         Ok(true) => {
