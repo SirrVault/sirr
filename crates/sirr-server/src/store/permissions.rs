@@ -19,7 +19,7 @@ pub enum PermBit {
     /// Bit 4 — create secrets
     Create = 4,
     /// Bit 5 — create on behalf of others
-    CreateOrg = 5,
+    CreateOnBehalf = 5,
     /// Bit 6 — patch my secrets
     PatchMy = 6,
     /// Bit 7 — patch org secrets
@@ -29,7 +29,7 @@ pub enum PermBit {
     /// Bit 9 — read org accounts
     AccountReadOrg = 9,
     /// Bit 10 — manage my account
-    ManageMy = 10,
+    AccountManage = 10,
     /// Bit 11 — manage org principals/roles
     ManageOrg = 11,
     /// Bit 12 — sirr admin (create/delete orgs)
