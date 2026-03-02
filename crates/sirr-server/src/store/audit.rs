@@ -16,6 +16,12 @@ pub const ACTION_WEBHOOK_CREATE: &str = "webhook.create";
 pub const ACTION_WEBHOOK_DELETE: &str = "webhook.delete";
 pub const ACTION_KEY_CREATE: &str = "key.create";
 pub const ACTION_KEY_DELETE: &str = "key.delete";
+pub const ACTION_ORG_CREATE: &str = "org.create";
+pub const ACTION_ORG_DELETE: &str = "org.delete";
+pub const ACTION_PRINCIPAL_CREATE: &str = "principal.create";
+pub const ACTION_PRINCIPAL_DELETE: &str = "principal.delete";
+pub const ACTION_ROLE_CREATE: &str = "role.create";
+pub const ACTION_ROLE_DELETE: &str = "role.delete";
 
 // ── AuditEvent ───────────────────────────────────────────────────────────────
 
@@ -70,4 +76,5 @@ pub struct AuditQuery {
     pub until: Option<i64>,
     pub action: Option<String>,
     pub limit: usize,
+    pub org_id: Option<String>,
 }

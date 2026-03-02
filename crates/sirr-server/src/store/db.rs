@@ -638,6 +638,55 @@ impl Store {
         result
     }
 
+    /// Prune expired/burned secrets scoped to a specific org. Returns pruned key names.
+    pub fn prune_org_secrets(&self, org_id: &str) -> Result<Vec<String>> {
+        let now = Self::now();
+        let prefix = format!("{org_id}:");
+
+        let expired_keys: Vec<String> = {
+            let read_txn = self.db.begin_read()?;
+            let table = read_txn.open_table(SECRETS)?;
+            let mut keys = Vec::new();
+            for item in table.iter()? {
+                let (k, v) = item?;
+                let key_str = k.value();
+                if !key_str.starts_with(&prefix) {
+                    continue;
+                }
+                let (record, _kv) = decode(v.value())?;
+                if record.is_expired(now) || record.is_burned() {
+                    keys.push(key_str.to_owned());
+                }
+            }
+            keys
+        };
+
+        if expired_keys.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(SECRETS)?;
+            for key in &expired_keys {
+                table.remove(key.as_str())?;
+            }
+        }
+        write_txn.commit()?;
+
+        // Return display keys (without prefix).
+        let display_keys: Vec<String> = expired_keys
+            .into_iter()
+            .map(|k| k[prefix.len()..].to_owned())
+            .collect();
+
+        let removed = display_keys.len();
+        if removed > 0 {
+            info!(org_id = %org_id, removed, "pruned expired org secrets");
+        }
+        Ok(display_keys)
+    }
+
     // ── Audit log ─────────────────────────────────────────────────────────
 
     /// Record an audit event. Allocates a monotonic ID via the counters table.
@@ -682,6 +731,11 @@ impl Store {
             }
             if let Some(ref action) = query.action {
                 if event.action != *action {
+                    continue;
+                }
+            }
+            if let Some(ref org_id) = query.org_id {
+                if event.org_id.as_deref() != Some(org_id.as_str()) {
                     continue;
                 }
             }
@@ -1466,6 +1520,7 @@ mod tests {
             until: None,
             action: None,
             limit: 100,
+            org_id: None,
         };
         let events = s.list_audit(&query).unwrap();
         assert_eq!(events.len(), 2);
@@ -1506,6 +1561,7 @@ mod tests {
                 until: None,
                 action: Some("secret.create".into()),
                 limit: 100,
+                org_id: None,
             })
             .unwrap();
         assert_eq!(events.len(), 3); // indices 0, 2, 4
@@ -1517,6 +1573,7 @@ mod tests {
                 until: None,
                 action: None,
                 limit: 2,
+                org_id: None,
             })
             .unwrap();
         assert_eq!(events.len(), 2);
@@ -1560,6 +1617,7 @@ mod tests {
                 until: None,
                 action: None,
                 limit: 100,
+                org_id: None,
             })
             .unwrap();
         assert_eq!(events.len(), 1);

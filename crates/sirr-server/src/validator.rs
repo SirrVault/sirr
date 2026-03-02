@@ -316,6 +316,7 @@ mod tests {
                 until: None,
                 action: Some("license.validate".into()),
                 limit: 100,
+                org_id: None,
             })
             .unwrap();
         assert!(!events.is_empty());

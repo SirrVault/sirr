@@ -124,6 +124,7 @@ pub async fn audit_events(
         until: params.until,
         action: params.action,
         limit,
+        org_id: None,
     };
     match state.store.list_audit(&query) {
         Ok(events) => {

@@ -3,6 +3,7 @@ pub mod dirs;
 pub mod handlers;
 pub mod heartbeat;
 pub mod license;
+pub mod org_handlers;
 pub mod server;
 pub mod store;
 pub mod validator;
