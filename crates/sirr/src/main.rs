@@ -39,11 +39,17 @@ enum Commands {
         /// Keep the secret after reads are exhausted (enables PATCH)
         #[arg(long)]
         no_delete: bool,
+        /// Organization ID (if operating on org secrets)
+        #[arg(long)]
+        org: Option<String>,
     },
     /// Get a secret by key
     Get {
         /// Secret key name
         key: String,
+        /// Organization ID (if operating on org secrets)
+        #[arg(long)]
+        org: Option<String>,
     },
     /// Pull all secrets into a .env file
     Pull {
@@ -63,11 +69,18 @@ enum Commands {
         key: String,
     },
     /// List all active secrets (metadata only)
-    List,
+    List {
+        /// Organization ID (if operating on org secrets)
+        #[arg(long)]
+        org: Option<String>,
+    },
     /// Delete a secret
     Delete {
         /// Secret key name
         key: String,
+        /// Organization ID (if operating on org secrets)
+        #[arg(long)]
+        org: Option<String>,
     },
     /// Delete all expired secrets immediately
     Prune,
@@ -89,6 +102,15 @@ enum Commands {
     /// Manage scoped API keys
     #[command(subcommand)]
     Keys(KeyCommand),
+    /// Manage organizations
+    #[command(subcommand)]
+    Orgs(OrgCommand),
+    /// Manage principals
+    #[command(subcommand)]
+    Principals(PrincipalCommand),
+    /// View/manage my account
+    #[command(subcommand)]
+    Me(MeCommand),
 }
 
 #[derive(Subcommand)]
@@ -132,6 +154,72 @@ enum KeyCommand {
     Remove {
         /// API key ID
         #[arg(name = "ID")]
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum OrgCommand {
+    /// List all organizations
+    List,
+    /// Create a new organization
+    Create {
+        /// Organization name
+        name: String,
+    },
+    /// Delete an organization by ID
+    Delete {
+        /// Organization ID
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PrincipalCommand {
+    /// List principals in an organization
+    List {
+        /// Organization ID
+        #[arg(long)]
+        org: String,
+    },
+    /// Create a new principal
+    Create {
+        /// Organization ID
+        #[arg(long)]
+        org: String,
+        /// Principal name
+        name: String,
+        /// Role to assign (default: writer)
+        #[arg(long, default_value = "writer")]
+        role: String,
+    },
+    /// Delete a principal by ID
+    Delete {
+        /// Organization ID
+        #[arg(long)]
+        org: String,
+        /// Principal ID
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum MeCommand {
+    /// Show my account info
+    Info,
+    /// List my API keys
+    Keys,
+    /// Create a new API key for myself
+    CreateKey {
+        /// Key name/label
+        name: String,
+        /// Validity duration in seconds (default: 86400 = 24h)
+        #[arg(long, default_value = "86400")]
+        valid_for_seconds: u64,
+    },
+    /// Delete one of my API keys
+    DeleteKey {
+        /// Key ID to delete
         id: String,
     },
 }
@@ -198,9 +286,20 @@ async fn main() -> Result<()> {
             ttl,
             reads,
             no_delete,
-        } => cmd_push(&ctx, &target, ttl.as_deref(), reads, !no_delete).await,
+            org,
+        } => {
+            cmd_push(
+                &ctx,
+                &target,
+                ttl.as_deref(),
+                reads,
+                !no_delete,
+                org.as_deref(),
+            )
+            .await
+        }
 
-        Commands::Get { key } => cmd_get(&ctx, &key).await,
+        Commands::Get { key, org } => cmd_get(&ctx, &key, org.as_deref()).await,
 
         Commands::Pull { path } => cmd_pull(&ctx, &path).await,
 
@@ -211,9 +310,9 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
-        Commands::List => cmd_list(&ctx).await,
+        Commands::List { org } => cmd_list(&ctx, org.as_deref()).await,
 
-        Commands::Delete { key } => cmd_delete(&ctx, &key).await,
+        Commands::Delete { key, org } => cmd_delete(&ctx, &key, org.as_deref()).await,
 
         Commands::Prune => cmd_prune(&ctx).await,
 
@@ -237,6 +336,30 @@ async fn main() -> Result<()> {
                 prefix,
             } => cmd_key_create(&ctx, &label, permissions, prefix).await,
             KeyCommand::Remove { id } => cmd_key_remove(&ctx, &id).await,
+        },
+
+        Commands::Orgs(sub) => match sub {
+            OrgCommand::List => cmd_org_list(&ctx).await,
+            OrgCommand::Create { name } => cmd_org_create(&ctx, &name).await,
+            OrgCommand::Delete { id } => cmd_org_delete(&ctx, &id).await,
+        },
+
+        Commands::Principals(sub) => match sub {
+            PrincipalCommand::List { org } => cmd_principal_list(&ctx, &org).await,
+            PrincipalCommand::Create { org, name, role } => {
+                cmd_principal_create(&ctx, &org, &name, &role).await
+            }
+            PrincipalCommand::Delete { org, id } => cmd_principal_delete(&ctx, &org, &id).await,
+        },
+
+        Commands::Me(sub) => match sub {
+            MeCommand::Info => cmd_me_info(&ctx).await,
+            MeCommand::Keys => cmd_me_keys(&ctx).await,
+            MeCommand::CreateKey {
+                name,
+                valid_for_seconds,
+            } => cmd_me_create_key(&ctx, &name, valid_for_seconds).await,
+            MeCommand::DeleteKey { id } => cmd_me_delete_key(&ctx, &id).await,
         },
     }
 }
@@ -296,9 +419,17 @@ struct MetaItem {
     delete: bool,
 }
 
-async fn fetch_list(ctx: &Ctx) -> Result<Vec<MetaItem>> {
+/// Build the secrets path prefix depending on whether an org is specified.
+fn secrets_path(org: Option<&str>) -> String {
+    match org {
+        Some(org_id) => format!("orgs/{org_id}/secrets"),
+        None => "secrets".to_string(),
+    }
+}
+
+async fn fetch_list(ctx: &Ctx, org: Option<&str>) -> Result<Vec<MetaItem>> {
     let resp = require_success(
-        ctx.get("secrets")
+        ctx.get(&secrets_path(org))
             .send()
             .await
             .context("HTTP request failed")?,
@@ -311,12 +442,9 @@ async fn fetch_list(ctx: &Ctx) -> Result<Vec<MetaItem>> {
     Ok(metas)
 }
 
-async fn fetch_value(ctx: &Ctx, key: &str) -> Result<String> {
-    let resp = ctx
-        .client
-        .get(format!("{}/secrets/{}", ctx.server, key))
-        .send()
-        .await?;
+async fn fetch_value(ctx: &Ctx, key: &str, org: Option<&str>) -> Result<String> {
+    let path = format!("{}/{}", secrets_path(org), key);
+    let resp = ctx.get(&path).send().await?;
     let json: Value = resp.json().await?;
     Ok(json["value"].as_str().unwrap_or("").to_owned())
 }
@@ -329,18 +457,19 @@ async fn cmd_push(
     ttl: Option<&str>,
     reads: Option<u32>,
     delete: bool,
+    org: Option<&str>,
 ) -> Result<()> {
     let ttl_seconds = ttl.map(parse_duration).transpose()?;
 
     if !target.contains('=') {
-        return push_env_file(ctx, target, ttl_seconds, reads, delete).await;
+        return push_env_file(ctx, target, ttl_seconds, reads, delete, org).await;
     }
 
     let (key, value) = target
         .split_once('=')
         .context("expected KEY=value or a .env file path")?;
 
-    push_one(ctx, key, value, ttl_seconds, reads, delete).await?;
+    push_one(ctx, key, value, ttl_seconds, reads, delete, org).await?;
     println!("✓ pushed {key}");
     Ok(())
 }
@@ -351,6 +480,7 @@ async fn push_env_file(
     ttl_seconds: Option<u64>,
     reads: Option<u32>,
     delete: bool,
+    org: Option<&str>,
 ) -> Result<()> {
     let entries =
         dotenvy::from_filename_iter(path).with_context(|| format!("read .env file: {path}"))?;
@@ -358,7 +488,7 @@ async fn push_env_file(
     let mut count = 0usize;
     for entry in entries {
         let (key, value) = entry.context("parse .env entry")?;
-        push_one(ctx, &key, &value, ttl_seconds, reads, delete).await?;
+        push_one(ctx, &key, &value, ttl_seconds, reads, delete, org).await?;
         println!("✓ pushed {key}");
         count += 1;
     }
@@ -373,6 +503,7 @@ async fn push_one(
     ttl_seconds: Option<u64>,
     max_reads: Option<u32>,
     delete: bool,
+    org: Option<&str>,
 ) -> Result<()> {
     let body = serde_json::json!({
         "key": key,
@@ -383,7 +514,7 @@ async fn push_one(
     });
 
     require_success(
-        ctx.post("secrets")
+        ctx.post(&secrets_path(org))
             .json(&body)
             .send()
             .await
@@ -393,13 +524,9 @@ async fn push_one(
     Ok(())
 }
 
-async fn cmd_get(ctx: &Ctx, key: &str) -> Result<()> {
-    let resp = ctx
-        .client
-        .get(format!("{}/secrets/{}", ctx.server, key))
-        .send()
-        .await
-        .context("HTTP request failed")?;
+async fn cmd_get(ctx: &Ctx, key: &str, org: Option<&str>) -> Result<()> {
+    let path = format!("{}/{}", secrets_path(org), key);
+    let resp = ctx.get(&path).send().await.context("HTTP request failed")?;
 
     let status = resp.status();
     let json: Value = resp.json().await.context("parse response")?;
@@ -415,11 +542,11 @@ async fn cmd_get(ctx: &Ctx, key: &str) -> Result<()> {
 }
 
 async fn cmd_pull(ctx: &Ctx, path: &str) -> Result<()> {
-    let metas = fetch_list(ctx).await?;
+    let metas = fetch_list(ctx, None).await?;
     let mut lines = Vec::new();
 
     for meta in &metas {
-        let value = fetch_value(ctx, &meta.key).await?;
+        let value = fetch_value(ctx, &meta.key, None).await?;
         lines.push(format!("{}={}", meta.key, shell_escape(&value)));
     }
 
@@ -433,11 +560,11 @@ async fn cmd_run(ctx: &Ctx, command: &[String]) -> Result<()> {
         anyhow::bail!("no command provided after --");
     }
 
-    let metas = fetch_list(ctx).await?;
+    let metas = fetch_list(ctx, None).await?;
     let mut env_vars: HashMap<String, String> = HashMap::new();
 
     for meta in &metas {
-        if let Ok(value) = fetch_value(ctx, &meta.key).await {
+        if let Ok(value) = fetch_value(ctx, &meta.key, None).await {
             env_vars.insert(meta.key.clone(), value);
         }
     }
@@ -452,8 +579,8 @@ async fn cmd_run(ctx: &Ctx, command: &[String]) -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-async fn cmd_list(ctx: &Ctx) -> Result<()> {
-    let metas = fetch_list(ctx).await?;
+async fn cmd_list(ctx: &Ctx, org: Option<&str>) -> Result<()> {
+    let metas = fetch_list(ctx, org).await?;
     if metas.is_empty() {
         println!("(no active secrets)");
         return Ok(());
@@ -486,9 +613,10 @@ async fn cmd_list(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_delete(ctx: &Ctx, key: &str) -> Result<()> {
+async fn cmd_delete(ctx: &Ctx, key: &str, org: Option<&str>) -> Result<()> {
+    let path = format!("{}/{}", secrets_path(org), key);
     require_success(
-        ctx.delete(&format!("secrets/{key}"))
+        ctx.delete(&path)
             .send()
             .await
             .context("HTTP request failed")?,
@@ -706,5 +834,212 @@ async fn cmd_key_remove(ctx: &Ctx, id: &str) -> Result<()> {
     )
     .await?;
     println!("API key {id} removed");
+    Ok(())
+}
+
+// ── Orgs ──────────────────────────────────────────────────────────────────
+
+async fn cmd_org_list(ctx: &Ctx) -> Result<()> {
+    let resp = require_success(
+        ctx.get("orgs")
+            .send()
+            .await
+            .context("HTTP request failed")?,
+    )
+    .await?;
+
+    let json: Value = resp.json().await?;
+    let orgs = json["orgs"].as_array();
+    match orgs {
+        Some(arr) if arr.is_empty() => println!("(no organizations)"),
+        Some(arr) => {
+            for o in arr {
+                let id = o["id"].as_str().unwrap_or("?");
+                let name = o["name"].as_str().unwrap_or("?");
+                println!("  {id}  {name}");
+            }
+        }
+        None => println!("(no organizations)"),
+    }
+    Ok(())
+}
+
+async fn cmd_org_create(ctx: &Ctx, name: &str) -> Result<()> {
+    let body = serde_json::json!({"name": name});
+
+    let resp = require_success(
+        ctx.post("orgs")
+            .json(&body)
+            .send()
+            .await
+            .context("HTTP request failed")?,
+    )
+    .await?;
+
+    let json: Value = resp.json().await?;
+    let id = json["id"].as_str().unwrap_or("?");
+    println!("org created");
+    println!("  id:   {id}");
+    println!("  name: {name}");
+    Ok(())
+}
+
+async fn cmd_org_delete(ctx: &Ctx, id: &str) -> Result<()> {
+    require_success(
+        ctx.delete(&format!("orgs/{id}"))
+            .send()
+            .await
+            .context("HTTP request failed")?,
+    )
+    .await?;
+    println!("org {id} deleted");
+    Ok(())
+}
+
+// ── Principals ────────────────────────────────────────────────────────────
+
+async fn cmd_principal_list(ctx: &Ctx, org: &str) -> Result<()> {
+    let resp = require_success(
+        ctx.get(&format!("orgs/{org}/principals"))
+            .send()
+            .await
+            .context("HTTP request failed")?,
+    )
+    .await?;
+
+    let json: Value = resp.json().await?;
+    let principals = json["principals"].as_array();
+    match principals {
+        Some(arr) if arr.is_empty() => println!("(no principals)"),
+        Some(arr) => {
+            for p in arr {
+                let id = p["id"].as_str().unwrap_or("?");
+                let name = p["name"].as_str().unwrap_or("?");
+                let role = p["role"].as_str().unwrap_or("?");
+                println!("  {id}  {name}  role={role}");
+            }
+        }
+        None => println!("(no principals)"),
+    }
+    Ok(())
+}
+
+async fn cmd_principal_create(ctx: &Ctx, org: &str, name: &str, role: &str) -> Result<()> {
+    let body = serde_json::json!({
+        "name": name,
+        "role": role,
+    });
+
+    let resp = require_success(
+        ctx.post(&format!("orgs/{org}/principals"))
+            .json(&body)
+            .send()
+            .await
+            .context("HTTP request failed")?,
+    )
+    .await?;
+
+    let json: Value = resp.json().await?;
+    let id = json["id"].as_str().unwrap_or("?");
+    println!("principal created");
+    println!("  id:   {id}");
+    println!("  name: {name}");
+    println!("  role: {role}");
+    Ok(())
+}
+
+async fn cmd_principal_delete(ctx: &Ctx, org: &str, id: &str) -> Result<()> {
+    require_success(
+        ctx.delete(&format!("orgs/{org}/principals/{id}"))
+            .send()
+            .await
+            .context("HTTP request failed")?,
+    )
+    .await?;
+    println!("principal {id} deleted");
+    Ok(())
+}
+
+// ── Me ────────────────────────────────────────────────────────────────────
+
+async fn cmd_me_info(ctx: &Ctx) -> Result<()> {
+    let resp = require_success(ctx.get("me").send().await.context("HTTP request failed")?).await?;
+
+    let json: Value = resp.json().await?;
+    let id = json["id"].as_str().unwrap_or("?");
+    let name = json["name"].as_str().unwrap_or("?");
+    let org_id = json["org_id"].as_str().unwrap_or("?");
+    let role = json["role"].as_str().unwrap_or("?");
+    println!("  id:     {id}");
+    println!("  name:   {name}");
+    println!("  org:    {org_id}");
+    println!("  role:   {role}");
+
+    if let Some(keys) = json["keys"].as_array() {
+        println!("  keys:");
+        for k in keys {
+            let kid = k["id"].as_str().unwrap_or("?");
+            let kname = k["name"].as_str().unwrap_or("?");
+            println!("    {kid}  {kname}");
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_me_keys(ctx: &Ctx) -> Result<()> {
+    let resp = require_success(ctx.get("me").send().await.context("HTTP request failed")?).await?;
+
+    let json: Value = resp.json().await?;
+    if let Some(keys) = json["keys"].as_array() {
+        if keys.is_empty() {
+            println!("(no keys)");
+        } else {
+            for k in keys {
+                let kid = k["id"].as_str().unwrap_or("?");
+                let kname = k["name"].as_str().unwrap_or("?");
+                let valid_before = k["valid_before"].as_i64().unwrap_or(0);
+                println!("  {kid}  {kname}  expires={valid_before}");
+            }
+        }
+    } else {
+        println!("(no keys)");
+    }
+    Ok(())
+}
+
+async fn cmd_me_create_key(ctx: &Ctx, name: &str, valid_for_seconds: u64) -> Result<()> {
+    let body = serde_json::json!({
+        "name": name,
+        "valid_for_seconds": valid_for_seconds,
+    });
+
+    let resp = require_success(
+        ctx.post("me/keys")
+            .json(&body)
+            .send()
+            .await
+            .context("HTTP request failed")?,
+    )
+    .await?;
+
+    let json: Value = resp.json().await?;
+    let id = json["id"].as_str().unwrap_or("?");
+    let key = json["key"].as_str().unwrap_or("?");
+    println!("key created");
+    println!("  id:   {id}");
+    println!("  key:  {key}");
+    println!("  (save this key — it won't be shown again)");
+    Ok(())
+}
+
+async fn cmd_me_delete_key(ctx: &Ctx, id: &str) -> Result<()> {
+    require_success(
+        ctx.delete(&format!("me/keys/{id}"))
+            .send()
+            .await
+            .context("HTTP request failed")?,
+    )
+    .await?;
+    println!("key {id} deleted");
     Ok(())
 }
